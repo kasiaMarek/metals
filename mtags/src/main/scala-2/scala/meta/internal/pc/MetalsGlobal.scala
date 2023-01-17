@@ -167,6 +167,11 @@ class MetalsGlobal(
       visit: Member => Boolean
   ): SymbolSearch.Result = {
 
+    def isRelevantWorkspaceSymbol(sym: Symbol): Boolean = {
+      pprint.log(sym)
+      sym.isClass || sym.isModule || sym.isPackageObject || sym.isTraitOrInterface
+    }
+
     lazy val isInStringInterpolation = {
       lastVisitedParentTrees match {
         case Apply(
@@ -184,17 +189,19 @@ class MetalsGlobal(
       val visitor = new CompilerSearchVisitor(
         context,
         sym =>
-          visit {
-            if (isInStringInterpolation)
-              new WorkspaceInterpolationMember(
-                sym,
-                Nil,
-                edit => s"{$edit}",
-                None
-              )
-            else
-              new WorkspaceMember(sym)
-          }
+          if (isRelevantWorkspaceSymbol(sym))
+            visit {
+              if (isInStringInterpolation)
+                new WorkspaceInterpolationMember(
+                  sym,
+                  Nil,
+                  edit => s"{$edit}",
+                  None
+                )
+              else
+                new WorkspaceMember(sym)
+            }
+          else false
       )
       search.search(query, buildTargetIdentifier, visitor)
     }
