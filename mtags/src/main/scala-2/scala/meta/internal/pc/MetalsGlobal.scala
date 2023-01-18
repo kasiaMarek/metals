@@ -168,8 +168,7 @@ class MetalsGlobal(
   ): SymbolSearch.Result = {
 
     def isRelevantWorkspaceSymbol(sym: Symbol): Boolean = {
-      pprint.log(sym)
-      sym.isClass || sym.isModule || sym.isPackageObject || sym.isTraitOrInterface
+      sym.isClass || sym.isModule || sym.isPackageObject || sym.isTrait || sym.isInterface
     }
 
     lazy val isInStringInterpolation = {

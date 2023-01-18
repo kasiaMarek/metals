@@ -107,7 +107,7 @@ final class DefinitionProvider(
     }
 
     fromCompilerOrSemanticdb.map { definition =>
-      if (definition.isEmpty) {
+      if (definition.isEmpty && definition.symbol.isEmpty()) {
         fromSearch(path, params.getPosition()).getOrElse(definition)
       } else {
         definition
