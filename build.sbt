@@ -469,6 +469,8 @@ lazy val metals = project
       "org.eclipse.platform" % "org.eclipse.osgi" % "3.15.0" exclude ("*", "*"),
       "org.eclipse.platform" % "org.eclipse.team.core" % "3.8.700" exclude ("*", "*"),
       "org.eclipse.platform" % "org.eclipse.text" % "3.9.0" exclude ("*", "*"),
+      // for indexing class dependencies
+      "io.github.classgraph" % "classgraph" % "4.8.162",
       // ==================
       // Scala dependencies
       // ==================

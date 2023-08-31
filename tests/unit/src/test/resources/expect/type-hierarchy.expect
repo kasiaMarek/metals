@@ -1,0 +1,61 @@
+example.StructuralTypes$$anon$1 -> example.StructuralTypes$, java.lang.String
+scala.runtime.AbstractFunction1 -> java.lang.String, java.lang.invoke.SerializedLambda, scala.Function1, scala.reflect.ScalaSignature
+example.AnonymousClasses -> scala.reflect.ScalaSignature
+example.StructuralTypes$ -> example.StructuralTypes$$anon$1, java.lang.Class, java.lang.Integer, java.lang.String, java.lang.Throwable, java.lang.invoke.CallSite, java.lang.invoke.MethodHandles, java.lang.invoke.MethodHandles$Lookup, java.lang.invoke.MethodType, java.lang.reflect.InvocationTargetException, java.lang.reflect.Method, scala.runtime.ScalaRunTime$, scala.runtime.StructuralCallSite
+scala.Product -> java.lang.IndexOutOfBoundsException, java.lang.String, java.lang.StringBuilder, scala.Equals, scala.Product$$anon$1, scala.Product$$anon$2, scala.collection.Iterator, scala.reflect.ScalaSignature
+example.Locals -> scala.reflect.ScalaSignature
+example.package$PackageObjectClass -> example.package
+example.User -> example.User$, java.io.Serializable, java.lang.String, scala.Function1, scala.Option, scala.Product, scala.collection.Iterator, scala.reflect.ScalaSignature, scala.runtime.ScalaRunTime$, scala.runtime.Statics
+scala.reflect.ScalaSignature -> java.lang.String, java.lang.annotation.Annotation, java.lang.annotation.Retention, java.lang.annotation.Target
+example.ImplicitClasses -> example.ImplicitClasses$, example.ImplicitClasses$Xtension, example.ImplicitClasses$XtensionAnyVal, example.ImplicitClasses$XtensionAnyVal$, scala.reflect.ScalaSignature
+example.User$ -> example.User, java.io.Serializable, java.lang.Class, java.lang.String, java.lang.invoke.SerializedLambda, scala.Function1, scala.None$, scala.Option, scala.Predef$, scala.Some, scala.collection.immutable.Map$, scala.runtime.AbstractFunction1, scala.runtime.ModuleSerializationProxy
+example.package -> example.package$PackageObjectClass, scala.reflect.ScalaSignature
+example.Comments -> example.Comments$A, example.Comments$A$, java.lang.Throwable, scala.reflect.ScalaSignature
+scala.runtime.AbstractFunction0 -> java.lang.String, scala.Function0, scala.reflect.ScalaSignature
+example.NamedArguments$ -> example.User, java.lang.String, scala.collection.immutable.ArraySeq, scala.collection.immutable.List$, scala.collection.immutable.Seq, scala.package$, scala.runtime.ScalaRunTime$
+example.PatternMatching -> java.lang.Integer, scala.MatchError, scala.Predef$, scala.Some, scala.Tuple2, scala.Tuple2$mcII$sp, scala.reflect.ScalaSignature, scala.runtime.BoxesRunTime
+example.Comments$A -> example.Comments
+example.PackageObjectSibling -> scala.reflect.ScalaSignature
+example.nested.LocalDeclarations$$anon$1 -> example.nested.LocalDeclarations, example.nested.LocalDeclarations$
+example.nested.ExampleNested -> scala.reflect.ScalaSignature
+example.Vars -> example.Vars$, scala.reflect.ScalaSignature
+example.nested.package -> example.nested.package$PackageObjectNestedClass, scala.reflect.ScalaSignature
+example.ExampleSuite$ -> example.NamedArguments$, example.User, scala.Predef$
+example.JavaThenScala -> example.JavaClass, scala.reflect.ScalaSignature
+example.Imports -> java.lang.Throwable, scala.math.package$, scala.reflect.ScalaSignature, scala.util.Failure
+example.nested.Foo -> scala.reflect.ScalaSignature
+scala.Function0 -> java.lang.String, scala.reflect.ScalaSignature, scala.runtime.BoxesRunTime
+example.Miscellaneous -> java.lang.String, java.lang.invoke.CallSite, java.lang.invoke.LambdaMetafactory, java.lang.invoke.MethodHandle, java.lang.invoke.MethodHandles, java.lang.invoke.MethodHandles$Lookup, java.lang.invoke.MethodType, java.lang.invoke.SerializedLambda, scala.Function1, scala.collection.IterableOnce, scala.collection.immutable.ArraySeq, scala.collection.immutable.List, scala.collection.immutable.List$, scala.collection.immutable.Seq, scala.package$, scala.reflect.ScalaSignature, scala.runtime.BoxedUnit, scala.runtime.LambdaDeserialize, scala.runtime.ScalaRunTime$, scala.runtime.java8.JFunction1$mcII$sp
+example.EtaExpansion -> java.lang.Integer, java.lang.String, java.lang.invoke.CallSite, java.lang.invoke.LambdaMetafactory, java.lang.invoke.MethodHandle, java.lang.invoke.MethodHandles, java.lang.invoke.MethodHandles$Lookup, java.lang.invoke.MethodType, java.lang.invoke.SerializedLambda, scala.Function1, scala.Predef$, scala.collection.immutable.ArraySeq, scala.collection.immutable.List, scala.collection.immutable.List$, scala.collection.immutable.Seq, scala.package$, scala.reflect.ScalaSignature, scala.runtime.BoxesRunTime, scala.runtime.LambdaDeserialize, scala.runtime.ScalaRunTime$, scala.runtime.java8.JFunction1$mcII$sp
+example.nested.LocalDeclarations -> example.nested.LocalDeclarations$, scala.reflect.ScalaSignature
+example.nested.LocalDeclarations$ -> example.nested.Foo, example.nested.LocalDeclarations, example.nested.LocalDeclarations$$anon$1, example.nested.LocalDeclarations$$anon$2, example.nested.LocalDeclarations$$anon$3, java.lang.Class, java.lang.Integer, java.lang.String, java.lang.Throwable, java.lang.invoke.CallSite, java.lang.invoke.MethodHandles, java.lang.invoke.MethodHandles$Lookup, java.lang.invoke.MethodType, java.lang.reflect.InvocationTargetException, java.lang.reflect.Method, scala.runtime.BoxesRunTime, scala.runtime.ScalaRunTime$, scala.runtime.StructuralCallSite
+example.Companion -> scala.reflect.ScalaSignature
+example.Scalalib -> java.lang.Integer, scala.Predef$, scala.Tuple11, scala.collection.immutable.$colon$colon, scala.collection.immutable.List, scala.collection.immutable.Nil$, scala.reflect.ScalaSignature, scala.runtime.BoxesRunTime, scala.runtime.Nothing$, scala.runtime.Null$, scala.runtime.Statics
+example.nested.x.DoublePackage -> scala.reflect.ScalaSignature
+example.NamedArguments -> example.NamedArguments$, example.User, java.lang.String, scala.reflect.ScalaSignature
+example.nested2.y.DoublePackage -> scala.reflect.ScalaSignature
+example.nested.LocalDeclarations$$anon$2 -> example.nested.Foo, example.nested.LocalDeclarations, example.nested.LocalDeclarations$, scala.runtime.Statics
+example.StructuralTypes -> example.StructuralTypes$, scala.reflect.ScalaSignature
+example.ImplicitClasses$XtensionAnyVal$ -> example.ImplicitClasses, example.ImplicitClasses$XtensionAnyVal, java.lang.Integer
+example.TypeParameters$TraitParameter -> example.TypeParameters
+example.MethodOverload -> java.lang.String, scala.reflect.ScalaSignature
+example.ImplicitClasses$Xtension -> example.ImplicitClasses
+example.ReflectiveInvocation$$anon$1 -> example.ReflectiveInvocation, java.io.Serializable, java.lang.String
+example.TypeParameters -> example.TypeParameters$TraitParameter, scala.reflect.ScalaSignature
+example.nested.LocalClass$LocalClass$1 -> example.nested.LocalClass, java.io.Serializable, java.lang.String, scala.Product, scala.collection.Iterator, scala.runtime.ScalaRunTime$, scala.runtime.Statics
+example.nested.LocalDeclarations$$anon$3 -> example.nested.Foo, example.nested.LocalDeclarations, example.nested.LocalDeclarations$, scala.runtime.Statics
+example.ExampleSuite -> scala.reflect.ScalaSignature
+example.ImplicitClasses$XtensionAnyVal -> example.ImplicitClasses, example.ImplicitClasses$XtensionAnyVal$
+example.Comments$A$ -> example.Comments
+example.nested.LocalClass$LocalClass$2$ -> example.nested.LocalClass, example.nested.LocalClass$LocalClass$1, java.io.Serializable, java.lang.String, scala.Function0, scala.runtime.AbstractFunction0
+scala.Function1 -> java.lang.Double, java.lang.Float, java.lang.Integer, java.lang.Long, java.lang.String, java.lang.invoke.CallSite, java.lang.invoke.LambdaMetafactory, java.lang.invoke.MethodHandle, java.lang.invoke.MethodHandles, java.lang.invoke.MethodHandles$Lookup, java.lang.invoke.MethodType, java.lang.invoke.SerializedLambda, scala.Function1$, scala.Function1$UnliftOps, scala.Function1$UnliftOps$, scala.reflect.ScalaSignature, scala.runtime.BoxesRunTime, scala.runtime.LambdaDeserialize
+scala.Equals -> scala.reflect.ScalaSignature
+example.ForComprehensions -> java.lang.Boolean, java.lang.Integer, java.lang.String, java.lang.invoke.CallSite, java.lang.invoke.LambdaMetafactory, java.lang.invoke.MethodHandle, java.lang.invoke.MethodHandles, java.lang.invoke.MethodHandles$Lookup, java.lang.invoke.MethodType, java.lang.invoke.SerializedLambda, scala.Function1, scala.MatchError, scala.Tuple2, scala.Tuple2$mcII$sp, scala.Tuple4, scala.Tuple6, scala.collection.IterableOps, scala.collection.WithFilter, scala.collection.immutable.$colon$colon, scala.collection.immutable.ArraySeq, scala.collection.immutable.List, scala.collection.immutable.List$, scala.collection.immutable.Nil$, scala.collection.immutable.Seq, scala.package$, scala.reflect.ScalaSignature, scala.runtime.BoxesRunTime, scala.runtime.LambdaDeserialize, scala.runtime.ScalaRunTime$, scala.runtime.java8.JFunction1$mcZI$sp
+example.nested.package$PackageObjectNestedClass -> example.nested.package
+example.type.Backtick -> scala.reflect.ScalaSignature
+example.VarArgs -> scala.collection.immutable.Seq, scala.reflect.ScalaSignature
+example.TryCatch -> java.lang.Integer, java.lang.String, java.lang.StringBuilder, java.lang.Throwable, scala.reflect.ScalaSignature, scala.runtime.BoxedUnit, scala.runtime.BoxesRunTime
+example.ImplicitClasses$ -> example.ImplicitClasses, example.ImplicitClasses$Xtension
+example.ReflectiveInvocation -> example.ReflectiveInvocation$$anon$1, java.lang.String, scala.reflect.ScalaSignature
+example.nested.LocalClass -> example.nested.LocalClass$LocalClass$1, example.nested.LocalClass$LocalClass$2$, java.lang.Throwable, scala.reflect.ScalaSignature, scala.runtime.LazyRef
+example.ImplicitConversions -> java.lang.String, java.lang.StringBuilder, scala.Predef, scala.Predef$, scala.Predef$any2stringadd$, scala.Tuple2, scala.Tuple2$mcII$sp, scala.collection.StringOps$, scala.reflect.ScalaSignature
