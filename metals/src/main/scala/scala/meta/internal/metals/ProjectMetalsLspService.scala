@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
+import scala.concurrent.Promise
 import scala.util.Failure
 import scala.util.Success
 import scala.util.control.NonFatal
@@ -55,6 +56,12 @@ import org.eclipse.lsp4j.DidSaveTextDocumentParams
 import org.eclipse.lsp4j.InitializeParams
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
+import scala.meta.internal.metals.Connect.OnGoingConnectionRequest
+import scala.meta.internal.metals.Connect.Skip
+import scala.meta.internal.metals.Connect.Wait
+import scala.meta.internal.metals.Connect.Cancel
+import scala.meta.internal.metals.Connect.ConnectContext
+import scala.meta.internal.metals.Connect.ResolutionStrategy
 
 class ProjectMetalsLspService(
     ec: ExecutionContextExecutorService,
@@ -104,7 +111,6 @@ class ProjectMetalsLspService(
   )
 
   val isImportInProcess = new AtomicBoolean(false)
-  val isConnecting = new AtomicBoolean(false)
   val willGenerateBspConfig = new AtomicReference(Set.empty[util.UUID])
 
   def withWillGenerateBspConfig[T](body: => Future[T]): Future[T] = {
@@ -278,52 +284,54 @@ class ProjectMetalsLspService(
 
   def slowConnectToBuildServer(
       forceImport: Boolean
-  ): Future[BuildChange] = {
-    val chosenBuildServer = tables.buildServers.selectedServer()
-    def useBuildToolBsp(buildTool: BuildTool) =
-      buildTool match {
-        case _: BloopInstallProvider => userConfig.defaultBspToBuildTool
-        case _: BuildServerProvider => true
-        case _ => false
-      }
+  )(implicit cc: ConnectContext = Cancel): Future[BuildChange] = {
+    Connect.inConnectContext { request =>
+      implicit val cc: ConnectContext = request
+      // TODO:: register things for cancel
+      val chosenBuildServer = tables.buildServers.selectedServer()
+      def useBuildToolBsp(buildTool: BuildTool) =
+        buildTool match {
+          case _: BloopInstallProvider => userConfig.defaultBspToBuildTool
+          case _: BuildServerProvider => true
+          case _ => false
+        }
 
-    def isSelected(buildTool: BuildTool) =
-      buildTool match {
-        case _: BuildServerProvider =>
-          chosenBuildServer.contains(buildTool.buildServerName)
-        case _ => false
-      }
+      def isSelected(buildTool: BuildTool) =
+        buildTool match {
+          case _: BuildServerProvider =>
+            chosenBuildServer.contains(buildTool.buildServerName)
+          case _ => false
+        }
 
-    supportedBuildTool().flatMap {
-      case Some(BuildTool.Found(buildTool: BloopInstallProvider, digest))
-          if chosenBuildServer.contains(BloopServers.name) ||
-            chosenBuildServer.isEmpty && !useBuildToolBsp(buildTool) =>
-        slowConnectToBloopServer(forceImport, buildTool, digest)
-      case Some(found)
-          if isSelected(found.buildTool) &&
-            found.buildTool.isBspGenerated(folder) =>
-        indexer.reloadWorkspaceAndIndex(
-          forceImport,
-          found.buildTool,
-          found.digest,
-          importBuild,
-          reconnectToBuildServer = () =>
-            if (!isConnecting.get()) {
-              quickConnectToBuildServer()
-            } else {
-              scribe.warn("Cannot reload build session, still connecting...")
-              Future.successful(BuildChange.None)
-            },
-        )
-      case Some(BuildTool.Found(buildTool: BuildServerProvider, _)) =>
-        slowConnectToBuildToolBsp(buildTool, forceImport, isSelected(buildTool))
-      // Used when there are multiple `.bsp/<name>.json` configs and a known build tool (e.g. sbt)
-      case Some(BuildTool.Found(buildTool, _))
-          if buildTool.isBspGenerated(folder) =>
-        maybeChooseServer(buildTool.buildServerName, isSelected(buildTool))
-        quickConnectToBuildServer()
-      // Used in tests, `.bloop` folder exists but no build tool is detected
-      case _ => quickConnectToBuildServer()
+      supportedBuildTool().flatMap {
+        case Some(BuildTool.Found(buildTool: BloopInstallProvider, digest))
+            if chosenBuildServer.contains(BloopServers.name) ||
+              chosenBuildServer.isEmpty && !useBuildToolBsp(buildTool) =>
+          slowConnectToBloopServer(forceImport, buildTool, digest)
+        case Some(found)
+            if isSelected(found.buildTool) &&
+              found.buildTool.isBspGenerated(folder) =>
+          indexer.reloadWorkspaceAndIndex(
+            forceImport,
+            found.buildTool,
+            found.digest,
+            importBuild,
+            reconnectToBuildServer = cxt => quickConnectToBuildServer()(cxt),
+          )
+        case Some(BuildTool.Found(buildTool: BuildServerProvider, _)) =>
+          slowConnectToBuildToolBsp(
+            buildTool,
+            forceImport,
+            isSelected(buildTool),
+          )
+        // Used when there are multiple `.bsp/<name>.json` configs and a known build tool (e.g. sbt)
+        case Some(BuildTool.Found(buildTool, _))
+            if buildTool.isBspGenerated(folder) =>
+          maybeChooseServer(buildTool.buildServerName, isSelected(buildTool))
+          quickConnectToBuildServer()
+        // Used in tests, `.bloop` folder exists but no build tool is detected
+        case _ => quickConnectToBuildServer()
+      }
     }
   }
 
@@ -331,7 +339,7 @@ class ProjectMetalsLspService(
       buildTool: BuildServerProvider,
       forceImport: Boolean,
       isSelected: Boolean,
-  ): Future[BuildChange] = {
+  )(implicit cc: ConnectContext): Future[BuildChange] = {
     val notification = tables.dismissedNotifications.ImportChanges
     if (buildTool.isBspGenerated(folder)) {
       maybeChooseServer(buildTool.buildServerName, isSelected)
@@ -402,7 +410,7 @@ class ProjectMetalsLspService(
       forceImport: Boolean,
       buildTool: BloopInstallProvider,
       checksum: String,
-  ): Future[BuildChange] =
+  )(implicit cc: ConnectContext): Future[BuildChange] =
     for {
       result <- {
         if (forceImport)
@@ -438,7 +446,9 @@ class ProjectMetalsLspService(
   override def optProjectRoot: Option[AbsolutePath] =
     buildTool.map(_.projectRoot).orElse(buildTools.bloopProject)
 
-  def quickConnectToBuildServer(): Future[BuildChange] =
+  def quickConnectToBuildServer()(implicit
+      cc: ConnectContext = Skip
+  ): Future[BuildChange] =
     for {
       change <-
         if (!buildTools.isAutoConnectable(optProjectRoot)) {
@@ -454,8 +464,9 @@ class ProjectMetalsLspService(
 
   def fullConnect(): Future[Unit] = {
     buildTools.initialize()
+    implicit val cc: ConnectContext = Cancel
     for {
-      _ <-
+      buildChange <-
         if (buildTools.isAutoConnectable(optProjectRoot))
           autoConnectToBuildServer()
         else slowConnectToBuildServer(forceImport = false)
@@ -846,68 +857,75 @@ class ProjectMetalsLspService(
     }
   }
 
-  def autoConnectToBuildServer(): Future[BuildChange] = {
-    def compileAllOpenFiles: BuildChange => Future[BuildChange] = {
-      case change if !change.isFailed =>
-        Future
-          .sequence(
-            compilations
-              .cascadeCompileFiles(buffers.open.toSeq)
-              .ignoreValue ::
-              compilers.load(buffers.open.toSeq) ::
-              Nil
+  def autoConnectToBuildServer()(implicit
+      cc: ConnectContext = Skip
+  ): Future[BuildChange] = {
+    Connect.inConnectContext { connectionRequest =>
+      // TODO:: register things for cancel
+      def compileAllOpenFiles: BuildChange => Future[BuildChange] = {
+        case change if !change.isFailed =>
+          Future
+            .sequence(
+              compilations
+                .cascadeCompileFiles(buffers.open.toSeq)
+                .ignoreValue ::
+                compilers.load(buffers.open.toSeq) ::
+                Nil
+            )
+            .map(_ => change)
+        case other => Future.successful(other)
+      }
+
+      val scalaCliPaths = scalaCli.paths
+
+      (for {
+        _ <- disconnectOldBuildServer()
+        maybeSession <- timerProvider.timed(
+          "Connected to build server",
+          true,
+        ) {
+          bspConnector.connect(
+            buildTool,
+            folder,
+            userConfig,
+            shellRunner,
           )
-          .map(_ => change)
-      case other => Future.successful(other)
+        }
+        result <- maybeSession match {
+          case Some(session) =>
+            val result = connectToNewBuildServer(session)
+            session.mainConnection.onReconnection { newMainConn =>
+              val updSession = session.copy(main = newMainConn)
+              connectToNewBuildServer(updSession)
+                .flatMap(compileAllOpenFiles)
+                .ignoreValue
+            }
+            result
+          case None =>
+            Future.successful(BuildChange.None)
+        }
+        _ <- Future.sequence(
+          scalaCliPaths
+            .collect {
+              case path if (!conflictsWithMainBsp(path.toNIO)) =>
+                scalaCli.start(path)
+            }
+        )
+        _ = initTreeView()
+      } yield result)
+        .recover { case NonFatal(e) =>
+          disconnectOldBuildServer()
+          val message =
+            "Failed to connect with build server, no functionality will work."
+          val details = " See logs for more details."
+          languageClient.showMessage(
+            new MessageParams(MessageType.Error, message + details)
+          )
+          scribe.error(message, e)
+          BuildChange.Failed
+        }
+        .flatMap(compileAllOpenFiles)
     }
-
-    val scalaCliPaths = scalaCli.paths
-
-    isConnecting.set(true)
-    (for {
-      _ <- disconnectOldBuildServer()
-      maybeSession <- timerProvider.timed("Connected to build server", true) {
-        bspConnector.connect(
-          buildTool,
-          folder,
-          userConfig,
-          shellRunner,
-        )
-      }
-      result <- maybeSession match {
-        case Some(session) =>
-          val result = connectToNewBuildServer(session)
-          session.mainConnection.onReconnection { newMainConn =>
-            val updSession = session.copy(main = newMainConn)
-            connectToNewBuildServer(updSession)
-              .flatMap(compileAllOpenFiles)
-              .ignoreValue
-          }
-          result
-        case None =>
-          Future.successful(BuildChange.None)
-      }
-      _ <- Future.sequence(
-        scalaCliPaths
-          .collect {
-            case path if (!conflictsWithMainBsp(path.toNIO)) =>
-              scalaCli.start(path)
-          }
-      )
-      _ = initTreeView()
-    } yield result)
-      .recover { case NonFatal(e) =>
-        disconnectOldBuildServer()
-        val message =
-          "Failed to connect with build server, no functionality will work."
-        val details = " See logs for more details."
-        languageClient.showMessage(
-          new MessageParams(MessageType.Error, message + details)
-        )
-        scribe.error(message, e)
-        BuildChange.Failed
-      }
-      .flatMap(compileAllOpenFiles)
   }
 
   def disconnectOldBuildServer(): Future[Unit] = {
@@ -941,7 +959,6 @@ class ProjectMetalsLspService(
       workspaceReload.persistChecksumStatus(Digest.Status.Started, _)
     )
     bspSession = Some(session)
-    isConnecting.set(false)
     for {
       _ <- importBuild(session)
       _ <- indexer.profiledIndexWorkspace(check)
@@ -1366,4 +1383,65 @@ class ProjectMetalsLspService(
     treeView.reset()
   }
 
+  object Connect {
+    val onGoingConnect: AtomicReference[OnGoingConnectionRequest] =
+      new AtomicReference(
+        new OnGoingConnectionRequest(Promise.successful(BuildChange.None))
+      )
+
+    def inConnectContext(
+        f: OnGoingConnectionRequest => Future[BuildChange]
+    )(implicit cc: ConnectContext): Future[BuildChange] = {
+      cc match {
+        case resolutionStrategy: ResolutionStrategy =>
+          val newRequest = new OnGoingConnectionRequest(Promise[BuildChange])
+          val current = onGoingConnect.updateAndGet { onGoing =>
+            if (onGoing.promise.isCompleted) newRequest
+            else onGoing
+          }
+          if (current == newRequest) {
+            val runOngoing = f(newRequest)
+            runOngoing.onComplete {
+              case Success(buildChange) =>
+                newRequest.promise.trySuccess(buildChange)
+              case Failure(_) =>
+                newRequest.promise.trySuccess(BuildChange.Failed)
+            }
+            runOngoing
+          } else {
+            scribe.warn("Cannot reload build session, still connecting...")
+            resolutionStrategy match {
+              case Skip =>
+                scribe.warn("skipping current request.")
+                current.promise.future
+              case Wait =>
+                scribe.warn("waiting for previous connection to succeed.")
+                current.promise.future.flatMap(_ => inConnectContext(f))
+              case Cancel =>
+                scribe.warn("canceling previous connection request.")
+                current.cancelables.cancel()
+                // if we don't handle cancel this is just blocking
+                current.promise.future.flatMap(_ => inConnectContext(f))
+            }
+          }
+
+        case request: OnGoingConnectionRequest => f(request)
+      }
+    }
+
+  }
+
+}
+
+object Connect {
+  sealed trait ConnectContext
+  class OnGoingConnectionRequest(val promise: Promise[BuildChange])
+      extends ConnectContext {
+    val cancelables = new MutableCancelable()
+  }
+
+  sealed trait ResolutionStrategy extends ConnectContext
+  object Skip extends ResolutionStrategy
+  object Cancel extends ResolutionStrategy
+  object Wait extends ResolutionStrategy
 }

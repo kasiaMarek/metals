@@ -37,6 +37,7 @@ import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.{bsp4j => b}
 import org.eclipse.lsp4j.Position
+import scala.meta.internal.metals.Connect.ConnectContext
 
 // todo https://github.com/scalameta/metals/issues/4788
 // clean () =>, use plain values
@@ -89,17 +90,17 @@ final case class Indexer(
       buildTool: BuildTool,
       checksum: String,
       importBuild: BspSession => Future[Unit],
-      reconnectToBuildServer: () => Future[BuildChange],
-  ): Future[BuildChange] = {
+      reconnectToBuildServer: ConnectContext => Future[BuildChange],
+  )(implicit cc: ConnectContext): Future[BuildChange] = {
     def reloadAndIndex(session: BspSession): Future[BuildChange] = {
       workspaceReload().persistChecksumStatus(Status.Started, buildTool)
 
       buildTool.ensurePrerequisites(workspaceFolder)
       buildTool match {
         case _: BspOnly =>
-          reconnectToBuildServer()
+          reconnectToBuildServer(cc)
         case _ if !session.canReloadWorkspace =>
-          reconnectToBuildServer()
+          reconnectToBuildServer(cc)
         case _ =>
           session
             .workspaceReload()
@@ -127,7 +128,7 @@ final case class Indexer(
         scribe.warn(
           "No build session currently active to reload. Attempting to reconnect."
         )
-        reconnectToBuildServer()
+        reconnectToBuildServer(cc)
       case Some(session) if forceRefresh => reloadAndIndex(session)
       case Some(session) =>
         workspaceReload().oldReloadResult(checksum) match {
