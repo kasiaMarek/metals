@@ -9,7 +9,6 @@ import java.util.concurrent.atomic.AtomicReference
 
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
-import scala.concurrent.Promise
 import scala.util.Failure
 import scala.util.Success
 import scala.util.control.NonFatal
@@ -35,6 +34,12 @@ import scala.meta.internal.builds.SbtBuildTool
 import scala.meta.internal.builds.ScalaCliBuildTool
 import scala.meta.internal.builds.ShellRunner
 import scala.meta.internal.builds.VersionRecommendation
+import scala.meta.internal.metals.Connect.CFuture
+import scala.meta.internal.metals.Connect.Cancel
+import scala.meta.internal.metals.Connect.ConnectContext
+import scala.meta.internal.metals.Connect.OnGoingConnectionRequest
+import scala.meta.internal.metals.Connect.Skip
+import scala.meta.internal.metals.Connect.XtensionFuture
 import scala.meta.internal.metals.Messages.IncompatibleBloopVersion
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.ammonite.Ammonite
@@ -56,12 +61,6 @@ import org.eclipse.lsp4j.DidSaveTextDocumentParams
 import org.eclipse.lsp4j.InitializeParams
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
-import scala.meta.internal.metals.Connect.OnGoingConnectionRequest
-import scala.meta.internal.metals.Connect.Skip
-import scala.meta.internal.metals.Connect.Wait
-import scala.meta.internal.metals.Connect.Cancel
-import scala.meta.internal.metals.Connect.ConnectContext
-import scala.meta.internal.metals.Connect.ResolutionStrategy
 
 class ProjectMetalsLspService(
     ec: ExecutionContextExecutorService,
@@ -238,6 +237,7 @@ class ProjectMetalsLspService(
     () => bspSession.map(_.mainConnection),
     restartBspServer,
     connectionBspStatus,
+    connect,
   )
 
   override def didChange(
@@ -284,10 +284,9 @@ class ProjectMetalsLspService(
 
   def slowConnectToBuildServer(
       forceImport: Boolean
-  )(implicit cc: ConnectContext = Cancel): Future[BuildChange] = {
-    Connect.inConnectContext { request =>
-      implicit val cc: ConnectContext = request
-      // TODO:: register things for cancel
+  )(implicit cc: ConnectContext): Future[BuildChange] = {
+    connect.inConnectContext { request =>
+      implicit val cc: OnGoingConnectionRequest = request
       val chosenBuildServer = tables.buildServers.selectedServer()
       def useBuildToolBsp(buildTool: BuildTool) =
         buildTool match {
@@ -303,7 +302,7 @@ class ProjectMetalsLspService(
           case _ => false
         }
 
-      supportedBuildTool().flatMap {
+      supportedBuildTool().withInterrupt.flatMap {
         case Some(BuildTool.Found(buildTool: BloopInstallProvider, digest))
             if chosenBuildServer.contains(BloopServers.name) ||
               chosenBuildServer.isEmpty && !useBuildToolBsp(buildTool) =>
@@ -339,7 +338,7 @@ class ProjectMetalsLspService(
       buildTool: BuildServerProvider,
       forceImport: Boolean,
       isSelected: Boolean,
-  )(implicit cc: ConnectContext): Future[BuildChange] = {
+  )(implicit cc: OnGoingConnectionRequest): CFuture[BuildChange] = {
     val notification = tables.dismissedNotifications.ImportChanges
     if (buildTool.isBspGenerated(folder)) {
       maybeChooseServer(buildTool.buildServerName, isSelected)
@@ -349,9 +348,9 @@ class ProjectMetalsLspService(
       buildTool.isInstanceOf[ScalaCliBuildTool]
     ) {
       maybeChooseServer(buildTool.buildServerName, isSelected)
-      generateBspAndConnect(buildTool)
+      generateBspAndConnect(buildTool).withInterrupt
     } else if (notification.isDismissed) {
-      Future.successful(BuildChange.None)
+      CFuture.successful(BuildChange.None)
     } else {
       scribe.debug("Awaiting user response...")
       languageClient
@@ -360,16 +359,17 @@ class ProjectMetalsLspService(
             .params(buildTool.executableName, buildTool.buildServerName)
         )
         .asScala
+        .withInterrupt
         .flatMap { item =>
           if (item == Messages.dontShowAgain) {
             notification.dismissForever()
-            Future.successful(BuildChange.None)
+            CFuture.successful(BuildChange.None)
           } else if (item == Messages.GenerateBspAndConnect.yes) {
             maybeChooseServer(buildTool.buildServerName, isSelected)
-            generateBspAndConnect(buildTool)
+            generateBspAndConnect(buildTool).withInterrupt
           } else {
             notification.dismiss(2, util.concurrent.TimeUnit.MINUTES)
-            Future.successful(BuildChange.None)
+            CFuture.successful(BuildChange.None)
           }
         }
     }
@@ -381,7 +381,7 @@ class ProjectMetalsLspService(
 
   protected def generateBspAndConnect(
       buildTool: BuildServerProvider
-  ): Future[BuildChange] =
+  )(implicit cc: OnGoingConnectionRequest): Future[BuildChange] =
     withWillGenerateBspConfig {
       buildTool
         .generateBspConfig(
@@ -389,7 +389,9 @@ class ProjectMetalsLspService(
           args => bspConfigGenerator.runUnconditionally(buildTool, args),
           statusBar,
         )
+        .withInterrupt
         .flatMap(_ => quickConnectToBuildServer())
+        .future
     }
 
   /**
@@ -410,13 +412,15 @@ class ProjectMetalsLspService(
       forceImport: Boolean,
       buildTool: BloopInstallProvider,
       checksum: String,
-  )(implicit cc: ConnectContext): Future[BuildChange] =
+  )(implicit
+      connectionRequest: OnGoingConnectionRequest
+  ): CFuture[BuildChange] =
     for {
       result <- {
         if (forceImport)
           bloopInstall.runUnconditionally(buildTool, isImportInProcess)
         else bloopInstall.runIfApproved(buildTool, checksum, isImportInProcess)
-      }
+      }.withInterrupt
       change <- {
         if (result.isInstalled) quickConnectToBuildServer()
         else if (result.isFailed) {
@@ -433,13 +437,12 @@ class ProjectMetalsLspService(
                 quickConnectToBuildServer()
               } else {
                 languageClient.showMessage(Messages.ImportProjectFailed)
-                Future.successful(BuildChange.Failed)
+                CFuture.successful(BuildChange.Failed)
               }
           } yield change
         } else {
-          Future.successful(BuildChange.None)
+          CFuture.successful(BuildChange.None)
         }
-
       }
     } yield change
 
@@ -447,9 +450,9 @@ class ProjectMetalsLspService(
     buildTool.map(_.projectRoot).orElse(buildTools.bloopProject)
 
   def quickConnectToBuildServer()(implicit
-      cc: ConnectContext = Skip
-  ): Future[BuildChange] =
-    for {
+      cc: ConnectContext
+  ): CFuture[BuildChange] =
+    (for {
       change <-
         if (!buildTools.isAutoConnectable(optProjectRoot)) {
           scribe.warn("Build server is not auto-connectable.")
@@ -460,7 +463,7 @@ class ProjectMetalsLspService(
     } yield {
       buildServerPromise.trySuccess(())
       change
-    }
+    }).withInterrupt
 
   def fullConnect(): Future[Unit] = {
     buildTools.initialize()
@@ -497,6 +500,7 @@ class ProjectMetalsLspService(
         .asScala
         .flatMap {
           case Messages.ProjectJavaHomeUpdate.restart =>
+            implicit val cc: ConnectContext = Cancel
             buildTool match {
               case Some(sbt: SbtBuildTool) if session.main.isSbt =>
                 for {
@@ -556,7 +560,7 @@ class ProjectMetalsLspService(
                 bspConfigGenerator.runUnconditionally(buildTool, _),
                 statusBar,
               )
-              _ <- quickConnectToBuildServer()
+              _ <- quickConnectToBuildServer()(Cancel).future
             } yield ()
           case _ => Future.successful(())
         }
@@ -644,7 +648,7 @@ class ProjectMetalsLspService(
             emitMessage("No build server connected. Will try to connect.")
         }
       }
-      _ <- autoConnectToBuildServer()
+      _ <- autoConnectToBuildServer()(Skip)
     } yield didShutdown
   }
 
@@ -674,7 +678,10 @@ class ProjectMetalsLspService(
     tables,
     languageClient,
     headDoctor.executeRefreshDoctor,
-    () => slowConnectToBuildServer(forceImport = true),
+    () => {
+      implicit val cc: ConnectContext = Cancel
+      slowConnectToBuildServer(forceImport = true)
+    },
     () => switchBspServer(),
   )
 
@@ -713,16 +720,13 @@ class ProjectMetalsLspService(
 
   def switchBspServer(): Future[Unit] =
     withWillGenerateBspConfig {
-      for {
-        isSwitched <- bspConnector.switchBuildServer(
+      bspConnector
+        .switchBuildServer(
           folder,
-          () => slowConnectToBuildServer(forceImport = true),
+          ctx => slowConnectToBuildServer(forceImport = true)(ctx),
+          ctx => quickConnectToBuildServer()(ctx),
         )
-        _ <- {
-          if (isSwitched) quickConnectToBuildServer()
-          else Future.successful(())
-        }
-      } yield ()
+        .ignoreValue
     }
 
   def resetPopupChoice(value: String): Future[Unit] =
@@ -736,6 +740,7 @@ class ProjectMetalsLspService(
       buildTools.loadSupported().collect {
         case buildTool: BuildServerProvider => buildTool
       }
+    implicit val cc: ConnectContext = Skip
 
     def ensureAndConnect(
         buildTool: BuildServerProvider,
@@ -744,7 +749,7 @@ class ProjectMetalsLspService(
       status match {
         case Generated =>
           tables.buildServers.chooseServer(buildTool.buildServerName)
-          quickConnectToBuildServer().ignoreValue
+          quickConnectToBuildServer()
         case Cancelled => ()
         case Failed(exit) =>
           exit match {
@@ -858,10 +863,10 @@ class ProjectMetalsLspService(
   }
 
   def autoConnectToBuildServer()(implicit
-      cc: ConnectContext = Skip
+      cc: ConnectContext
   ): Future[BuildChange] = {
-    Connect.inConnectContext { connectionRequest =>
-      // TODO:: register things for cancel
+    connect.inConnectContext { connectionRequest =>
+      implicit val cc: OnGoingConnectionRequest = connectionRequest
       def compileAllOpenFiles: BuildChange => Future[BuildChange] = {
         case change if !change.isFailed =>
           Future
@@ -876,41 +881,47 @@ class ProjectMetalsLspService(
         case other => Future.successful(other)
       }
 
-      val scalaCliPaths = scalaCli.paths
-
       (for {
-        _ <- disconnectOldBuildServer()
-        maybeSession <- timerProvider.timed(
-          "Connected to build server",
-          true,
-        ) {
-          bspConnector.connect(
-            buildTool,
-            folder,
-            userConfig,
-            shellRunner,
-          )
-        }
+        _ <- disconnectOldBuildServer().withInterrupt
+        maybeSession <- (timerProvider
+          .timed(
+            "Connected to build server",
+            true,
+          ) {
+            bspConnector
+              .connect(
+                buildTool,
+                folder,
+                userConfig,
+                shellRunner,
+              )
+              .map { maybeSession =>
+                connectionRequest.addCleanUpAction(() =>
+                  disconnectOldBuildServer(maybeSession)
+                )
+                maybeSession
+              }
+          })
+          .withInterrupt
         result <- maybeSession match {
           case Some(session) =>
             val result = connectToNewBuildServer(session)
             session.mainConnection.onReconnection { newMainConn =>
-              val updSession = session.copy(main = newMainConn)
-              connectToNewBuildServer(updSession)
-                .flatMap(compileAllOpenFiles)
-                .ignoreValue
+              implicit val cc: ConnectContext = Skip
+              connect.inConnectContext { request =>
+                implicit val cc: OnGoingConnectionRequest = request
+                val updSession = session.copy(main = newMainConn)
+                connectToNewBuildServer(updSession).withInterrupt
+                  .flatMap(compileAllOpenFiles(_).withInterrupt)
+              }.ignoreValue
             }
-            result
+            result.withInterrupt
           case None =>
-            Future.successful(BuildChange.None)
+            CFuture.successful(BuildChange.None)
         }
-        _ <- Future.sequence(
-          scalaCliPaths
-            .collect {
-              case path if (!conflictsWithMainBsp(path.toNIO)) =>
-                scalaCli.start(path)
-            }
-        )
+        _ <- scalaCli
+          .startForAllLastPaths(path => !conflictsWithMainBsp(path.toNIO))
+          .withInterrupt
         _ = initTreeView()
       } yield result)
         .recover { case NonFatal(e) =>
@@ -924,21 +935,23 @@ class ProjectMetalsLspService(
           scribe.error(message, e)
           BuildChange.Failed
         }
-        .flatMap(compileAllOpenFiles)
+        .flatMap(compileAllOpenFiles(_).withInterrupt)
     }
   }
 
-  def disconnectOldBuildServer(): Future[Unit] = {
+  def disconnectOldBuildServer(
+      optBspSession: Option[BspSession] = bspSession
+  ): Future[Unit] = {
     compilations.cancel()
     buildTargetClasses.cancel()
     diagnostics.reset()
-    bspSession.foreach(connection =>
+    optBspSession.foreach(connection =>
       scribe.info(s"Disconnecting from ${connection.main.name} session...")
     )
 
     for {
-      _ <- scalaCli.stop()
-      _ <- bspSession match {
+      _ <- scalaCli.stop(storeLast = true)
+      _ <- optBspSession match {
         case None => Future.successful(())
         case Some(session) =>
           bspSession = None
@@ -994,26 +1007,21 @@ class ProjectMetalsLspService(
   def resetWorkspace(): Future[Unit] =
     for {
       _ <- disconnectOldBuildServer()
-      shouldImport = optProjectRoot match {
+      _ = optProjectRoot match {
         case Some(path) if buildTools.isBloop(path) =>
           bloopServers.shutdownServer()
           clearBloopDir(path)
-          false
         case Some(path) if buildTools.isBazelBsp =>
           clearFolders(
             path.resolve(Directories.bazelBsp),
             path.resolve(Directories.bsp),
           )
-          true
         case Some(path) if buildTools.isBsp =>
           clearFolders(path.resolve(Directories.bsp))
-          true
-        case _ => false
+        case _ =>
       }
       _ = tables.cleanAll()
-      _ <-
-        if (shouldImport) slowConnectToBuildServer(true)
-        else autoConnectToBuildServer().map(_ => ())
+      _ <- fullConnect()
     } yield ()
 
   val treeView =
@@ -1092,6 +1100,7 @@ class ProjectMetalsLspService(
 
     val restartBuildServer = bspSession
       .map { session =>
+        implicit val cc: ConnectContext = Cancel
         if (session.main.isBloop) {
           bloopServers
             .ensureDesiredVersion(
@@ -1154,7 +1163,7 @@ class ProjectMetalsLspService(
         languageClient.showMessageRequest(messageParams).asScala.foreach {
           case action if action == IncompatibleBloopVersion.shutdown =>
             bloopServers.shutdownServer()
-            autoConnectToBuildServer()
+            autoConnectToBuildServer()(Cancel)
           case action if action == IncompatibleBloopVersion.dismissForever =>
             notification.dismissForever()
           case _ =>
@@ -1176,7 +1185,7 @@ class ProjectMetalsLspService(
           fullConnect()
         // used build tool changed
         case Some(chosenBuildTool) if changedBuilds.contains(chosenBuildTool) =>
-          slowConnectToBuildServer(forceImport = false).ignoreValue
+          slowConnectToBuildServer(forceImport = false)(Cancel).ignoreValue
         // maybe new build tool added
         case Some(chosenBuildTool) if changedBuilds.nonEmpty =>
           onBuildToolsAdded(chosenBuildTool, changedBuilds)
@@ -1205,7 +1214,7 @@ class ProjectMetalsLspService(
       buildToolSelector
         .onNewBuildToolAdded(newBuildTool, currentBuildTool)
         .flatMap { switch =>
-          if (switch) slowConnectToBuildServer(forceImport = false)
+          if (switch) slowConnectToBuildServer(forceImport = false)(Cancel)
           else Future.successful(BuildChange.None)
         }
     }.ignoreValue
@@ -1383,65 +1392,4 @@ class ProjectMetalsLspService(
     treeView.reset()
   }
 
-  object Connect {
-    val onGoingConnect: AtomicReference[OnGoingConnectionRequest] =
-      new AtomicReference(
-        new OnGoingConnectionRequest(Promise.successful(BuildChange.None))
-      )
-
-    def inConnectContext(
-        f: OnGoingConnectionRequest => Future[BuildChange]
-    )(implicit cc: ConnectContext): Future[BuildChange] = {
-      cc match {
-        case resolutionStrategy: ResolutionStrategy =>
-          val newRequest = new OnGoingConnectionRequest(Promise[BuildChange])
-          val current = onGoingConnect.updateAndGet { onGoing =>
-            if (onGoing.promise.isCompleted) newRequest
-            else onGoing
-          }
-          if (current == newRequest) {
-            val runOngoing = f(newRequest)
-            runOngoing.onComplete {
-              case Success(buildChange) =>
-                newRequest.promise.trySuccess(buildChange)
-              case Failure(_) =>
-                newRequest.promise.trySuccess(BuildChange.Failed)
-            }
-            runOngoing
-          } else {
-            scribe.warn("Cannot reload build session, still connecting...")
-            resolutionStrategy match {
-              case Skip =>
-                scribe.warn("skipping current request.")
-                current.promise.future
-              case Wait =>
-                scribe.warn("waiting for previous connection to succeed.")
-                current.promise.future.flatMap(_ => inConnectContext(f))
-              case Cancel =>
-                scribe.warn("canceling previous connection request.")
-                current.cancelables.cancel()
-                // if we don't handle cancel this is just blocking
-                current.promise.future.flatMap(_ => inConnectContext(f))
-            }
-          }
-
-        case request: OnGoingConnectionRequest => f(request)
-      }
-    }
-
-  }
-
-}
-
-object Connect {
-  sealed trait ConnectContext
-  class OnGoingConnectionRequest(val promise: Promise[BuildChange])
-      extends ConnectContext {
-    val cancelables = new MutableCancelable()
-  }
-
-  sealed trait ResolutionStrategy extends ConnectContext
-  object Skip extends ResolutionStrategy
-  object Cancel extends ResolutionStrategy
-  object Wait extends ResolutionStrategy
 }

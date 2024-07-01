@@ -14,6 +14,9 @@ import scala.meta.internal.builds.ScalaCliBuildTool
 import scala.meta.internal.builds.ShellRunner
 import scala.meta.internal.metals.BloopServers
 import scala.meta.internal.metals.BuildServerConnection
+import scala.meta.internal.metals.Connect
+import scala.meta.internal.metals.Connect.ConnectContext
+import scala.meta.internal.metals.Connect._
 import scala.meta.internal.metals.Messages
 import scala.meta.internal.metals.Messages.BspSwitch
 import scala.meta.internal.metals.MetalsEnrichments._
@@ -42,6 +45,7 @@ class BspConnector(
     currentConnection: () => Option[BuildServerConnection],
     restartBspServer: () => Future[Boolean],
     bspStatus: ConnectionBspStatus,
+    connectCtx: Connect,
 )(implicit ec: ExecutionContext) {
 
   /**
@@ -299,8 +303,9 @@ class BspConnector(
    */
   def switchBuildServer(
       workspace: AbsolutePath,
-      createBloopAndConnect: () => Future[BuildChange],
-  ): Future[Boolean] = {
+      createBloopAndConnect: ConnectContext => Future[BuildChange],
+      quickConnect: ConnectContext => CFuture[BuildChange],
+  ): Future[BuildChange] = {
 
     val foundServers = bspServers.findAvailableServers()
     val bloopPresent: Boolean = buildTools.isBloop
@@ -347,6 +352,25 @@ class BspConnector(
 
     val allPossibleServers = possibleServers ++ availableServers
 
+    def generateBspAndQuickConnect(buildTool: BuildServerProvider) = {
+      implicit val cc: ConnectContext = Connect.Cancel
+      connectCtx.inConnectContext { case request =>
+        implicit val cc: ConnectContext = request
+        buildTool
+          .generateBspConfig(
+            workspace,
+            args => bspConfigGenerator.runUnconditionally(buildTool, args),
+            statusBar,
+          )
+          .withInterrupt
+          .map(status => handleGenerationStatus(buildTool, status))
+          .flatMap {
+            case true => quickConnect(request)
+            case false => Connect.CFuture.successful(BuildChange.Failed)
+          }
+      }
+    }
+
     def handleServerChoice(
         possibleChoice: Option[String],
         currentSelectedServer: Option[String],
@@ -355,52 +379,37 @@ class BspConnector(
         case Some(choice) =>
           allPossibleServers(choice) match {
             case Left(buildTool) =>
-              buildTool
-                .generateBspConfig(
-                  workspace,
-                  args =>
-                    bspConfigGenerator.runUnconditionally(buildTool, args),
-                  statusBar,
-                )
-                .map(status => handleGenerationStatus(buildTool, status))
+              generateBspAndQuickConnect(buildTool)
             case Right(details) if details.getName == BloopServers.name =>
               tables.buildServers.chooseServer(details.getName)
               if (bloopPresent) {
-                Future.successful(true)
+                quickConnect(Connect.Cancel).future
               } else {
-                createBloopAndConnect().ignoreValue
-                Future.successful(false)
+                createBloopAndConnect(Connect.Cancel)
               }
             case Right(details)
                 if !currentSelectedServer.contains(details.getName) =>
               tables.buildServers.chooseServer(details.getName)
-              Future.successful(true)
-            case _ => Future.successful(false)
+              quickConnect(Connect.Cancel).future
+            case _ => Future.successful(BuildChange.None)
           }
         case _ =>
-          Future.successful(false)
+          Future.successful(BuildChange.None)
       }
     }
 
     allPossibleServers.keys.toList match {
       case Nil =>
         client.showMessage(BspSwitch.noInstalledServer)
-        Future.successful(false)
+        Future.successful(BuildChange.None)
       case singleServer :: Nil =>
         allPossibleServers(singleServer) match {
-          case Left(buildTool) =>
-            buildTool
-              .generateBspConfig(
-                workspace,
-                args => bspConfigGenerator.runUnconditionally(buildTool, args),
-                statusBar,
-              )
-              .map(status => handleGenerationStatus(buildTool, status))
+          case Left(buildTool) => generateBspAndQuickConnect(buildTool)
           case Right(connectionDetails) =>
             client.showMessage(
               BspSwitch.onlyOneServer(name = connectionDetails.getName())
             )
-            Future.successful(false)
+            Future.successful(BuildChange.None)
         }
       case multipleServers =>
         val currentSelectedServer =

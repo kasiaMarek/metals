@@ -15,6 +15,7 @@ import scala.util.control.NonFatal
 import scala.meta.internal.bsp.BuildChange
 import scala.meta.internal.builds.NewProjectProvider
 import scala.meta.internal.builds.ShellRunner
+import scala.meta.internal.metals.Connect.Cancel
 import scala.meta.internal.metals.DidFocusResult
 import scala.meta.internal.metals.HoverExtParams
 import scala.meta.internal.metals.MetalsEnrichments._
@@ -761,13 +762,13 @@ class WorkspaceLspService(
         ).asJavaObject
       case ServerCommands.ImportBuild() =>
         onCurrentFolder(
-          _.slowConnectToBuildServer(forceImport = true),
+          _.slowConnectToBuildServer(forceImport = true)(Cancel),
           ServerCommands.ImportBuild.title,
           default = () => BuildChange.None,
         ).asJavaObject
       case ServerCommands.ConnectBuildServer() =>
         onCurrentFolder(
-          _.quickConnectToBuildServer(),
+          _.quickConnectToBuildServer()(Cancel).future,
           ServerCommands.ConnectBuildServer.title,
           default = () => BuildChange.None,
         ).asJavaObject

@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.collection.immutable.Nil
+import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
 import scala.concurrent.Promise
@@ -19,7 +20,9 @@ import scala.util.Failure
 import scala.util.Success
 import scala.util.control.NonFatal
 
+import scala.meta.internal.async.ConcurrentQueue
 import scala.meta.internal.bsp.BspSession
+import scala.meta.internal.bsp.BuildChange
 import scala.meta.internal.bsp.ConnectionBspStatus
 import scala.meta.internal.builds.BspErrorHandler
 import scala.meta.internal.builds.BuildToolSelector
@@ -28,6 +31,14 @@ import scala.meta.internal.builds.WorkspaceReload
 import scala.meta.internal.implementation.ImplementationProvider
 import scala.meta.internal.implementation.Supermethods
 import scala.meta.internal.io.FileIO
+import scala.meta.internal.metals.Connect.CFuture
+import scala.meta.internal.metals.Connect.Cancel
+import scala.meta.internal.metals.Connect.CancelConnectException
+import scala.meta.internal.metals.Connect.ConnectContext
+import scala.meta.internal.metals.Connect.OnGoingConnectionRequest
+import scala.meta.internal.metals.Connect.ResolutionStrategy
+import scala.meta.internal.metals.Connect.Skip
+import scala.meta.internal.metals.Connect.Wait
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.StdReportContext
 import scala.meta.internal.metals.callHierarchy.CallHierarchyProvider
@@ -121,6 +132,7 @@ abstract class MetalsLspService(
   @volatile
   protected var userConfig: UserConfiguration = initialUserConfig
   protected val userConfigPromise: Promise[Unit] = Promise()
+  private[metals] val connect: Connect = new Connect
 
   ThreadPools.discardRejectedRunnables("MetalsLanguageServer.sh", sh)
   ThreadPools.discardRejectedRunnables("MetalsLanguageServer.ec", ec)
@@ -1796,4 +1808,129 @@ abstract class MetalsLspService(
 
   def getTastyForURI(uri: URI): Future[Either[String, String]] =
     fileDecoderProvider.getTastyForURI(uri)
+}
+
+class Connect {
+  private[metals] val onGoingConnect
+      : AtomicReference[OnGoingConnectionRequest] =
+    new AtomicReference(
+      new OnGoingConnectionRequest(Promise.successful(BuildChange.None))
+    )
+
+  def inConnectContext(
+      f: OnGoingConnectionRequest => CFuture[BuildChange]
+  )(implicit cc: ConnectContext, ec: ExecutionContext): Future[BuildChange] = {
+    // type of request:
+    // - auto connect (includes indexing)
+    // - slow connect (includes indexing)
+    // - indexing
+    cc match {
+      case resolutionStrategy: ResolutionStrategy =>
+        val newRequest = new OnGoingConnectionRequest(Promise[BuildChange])
+        val current = onGoingConnect.updateAndGet { onGoing =>
+          if (onGoing.isCompleted()) newRequest
+          else onGoing
+        }
+        if (current == newRequest) {
+          val runOngoing =
+            f(newRequest).future.recoverWith { case CancelConnectException =>
+              newRequest.cleanUp().map(_ => BuildChange.Cancelled)
+            }
+          runOngoing.onComplete {
+            case Success(buildChange) =>
+              newRequest.complete(buildChange)
+            case Failure(_) =>
+              newRequest.complete(BuildChange.Failed)
+          }
+          runOngoing
+        } else {
+          scribe.warn("Cannot reload build session, still connecting...")
+          // this can potentially reorder requests
+          //  - maybe use a queue
+          //  - does this even matter though (?)
+          resolutionStrategy match {
+            case Skip =>
+              scribe.warn("skipping current request.")
+              current.future
+            case Wait =>
+              scribe.warn("waiting for previous connection to succeed.")
+              current.future.flatMap(_ => inConnectContext(f))
+            case Cancel =>
+              scribe.warn("canceling previous connection request.")
+              current.cancel()
+              // if we don't handle cancel this is just blocking
+              current.future.flatMap(_ => inConnectContext(f))
+          }
+        }
+
+      case request: OnGoingConnectionRequest => f(request).future
+    }
+  }
+
+}
+
+object Connect {
+  object CancelConnectException extends RuntimeException
+  sealed trait ConnectContext {
+    def isCancelled(): Boolean = false
+  }
+  class OnGoingConnectionRequest(promise: Promise[BuildChange])
+      extends ConnectContext {
+    private val cancelPromise = Promise[Unit]
+    private val cleanUpActions =
+      new util.concurrent.ConcurrentLinkedQueue[() => Future[Unit]]()
+    def complete(buildChange: BuildChange): Boolean =
+      promise.trySuccess(buildChange)
+    def cancel(): Boolean = cancelPromise.trySuccess(())
+    def future = promise.future
+    def isCompleted() = promise.isCompleted
+    override def isCancelled() = cancelPromise.isCompleted
+    def addCleanUpAction(onCancel: () => Future[Unit]): Boolean =
+      cleanUpActions.add(onCancel)
+    def cleanUp()(implicit ex: ExecutionContext): Future[List[Unit]] =
+      Future.sequence(ConcurrentQueue.pollAll(cleanUpActions).map(_()))
+  }
+
+  sealed trait ResolutionStrategy extends ConnectContext
+  // probably makes more sense to have priorities instead
+  // e.g. slow connect - 0; auto connect - 1; reconnect - 2; indexing - 3;
+  object Skip extends ResolutionStrategy
+  object Cancel extends ResolutionStrategy
+  object Wait extends ResolutionStrategy
+
+  class CFuture[+T](val future: Future[T]) {
+    def interruptIfCancelled(cc: ConnectContext): Unit =
+      if (cc.isCancelled()) throw CancelConnectException
+    def flatMap[S](
+        f: T => CFuture[S]
+    )(implicit executor: ExecutionContext, cc: ConnectContext): CFuture[S] =
+      new CFuture(future.flatMap { t =>
+        interruptIfCancelled(cc)
+        f(t).future
+      })
+    def map[S](
+        f: T => S
+    )(implicit executor: ExecutionContext, cc: ConnectContext): CFuture[S] =
+      new CFuture(future.map { t =>
+        interruptIfCancelled(cc)
+        f(t)
+      })
+
+    def recover[U >: T](
+        pf: PartialFunction[Throwable, U]
+    )(implicit executor: ExecutionContext): CFuture[U] = {
+      val pf0: PartialFunction[Throwable, U] = { case CancelConnectException =>
+        throw CancelConnectException
+      }
+      new CFuture(future.recover(pf0.orElse(pf)))
+    }
+  }
+
+  object CFuture {
+    def successful[T](result: T) = new CFuture(Future.successful(result))
+  }
+
+  implicit class XtensionFuture[+T](future: Future[T]) {
+    def withInterrupt = new CFuture(future)
+  }
 }

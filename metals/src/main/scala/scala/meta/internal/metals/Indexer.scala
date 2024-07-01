@@ -25,6 +25,10 @@ import scala.meta.internal.builds.BuildTool
 import scala.meta.internal.builds.Digest.Status
 import scala.meta.internal.builds.WorkspaceReload
 import scala.meta.internal.implementation.ImplementationProvider
+import scala.meta.internal.metals.Connect.CFuture
+import scala.meta.internal.metals.Connect.ConnectContext
+import scala.meta.internal.metals.Connect.OnGoingConnectionRequest
+import scala.meta.internal.metals.Connect.XtensionFuture
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.clients.language.DelegatingLanguageClient
 import scala.meta.internal.metals.debug.BuildTargetClasses
@@ -37,7 +41,6 @@ import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.{bsp4j => b}
 import org.eclipse.lsp4j.Position
-import scala.meta.internal.metals.Connect.ConnectContext
 
 // todo https://github.com/scalameta/metals/issues/4788
 // clean () =>, use plain values
@@ -90,35 +93,38 @@ final case class Indexer(
       buildTool: BuildTool,
       checksum: String,
       importBuild: BspSession => Future[Unit],
-      reconnectToBuildServer: ConnectContext => Future[BuildChange],
-  )(implicit cc: ConnectContext): Future[BuildChange] = {
-    def reloadAndIndex(session: BspSession): Future[BuildChange] = {
+      reconnectToBuildServer: ConnectContext => CFuture[BuildChange],
+  )(implicit
+      connectionRequest: OnGoingConnectionRequest
+  ): CFuture[BuildChange] = {
+    def reloadAndIndex(session: BspSession): CFuture[BuildChange] = {
       workspaceReload().persistChecksumStatus(Status.Started, buildTool)
 
       buildTool.ensurePrerequisites(workspaceFolder)
       buildTool match {
         case _: BspOnly =>
-          reconnectToBuildServer(cc)
+          reconnectToBuildServer(connectionRequest)
         case _ if !session.canReloadWorkspace =>
-          reconnectToBuildServer(cc)
+          reconnectToBuildServer(connectionRequest)
         case _ =>
-          session
-            .workspaceReload()
-            .flatMap(_ => importBuild(session))
-            .map { _ =>
-              scribe.info("Correctly reloaded workspace")
-              profiledIndexWorkspace(check)
-              workspaceReload().persistChecksumStatus(
-                Status.Installed,
-                buildTool,
-              )
-              BuildChange.Reloaded
-            }
-            .recoverWith { case NonFatal(e) =>
+          (for {
+            _ <- session.workspaceReload().withInterrupt
+            _ <- importBuild(session).withInterrupt
+            _ = scribe.info("Correctly reloaded workspace")
+            _ <- profiledIndexWorkspace(check).withInterrupt
+          } yield {
+            workspaceReload().persistChecksumStatus(
+              Status.Installed,
+              buildTool,
+            )
+            BuildChange.Reloaded
+
+          })
+            .recover { case NonFatal(e) =>
               scribe.error(s"Unable to reload workspace: ${e.getMessage()}")
               workspaceReload().persistChecksumStatus(Status.Failed, buildTool)
               languageClient.showMessage(Messages.ReloadProjectFailed)
-              Future.successful(BuildChange.Failed)
+              BuildChange.Failed
             }
       }
     }
@@ -128,29 +134,31 @@ final case class Indexer(
         scribe.warn(
           "No build session currently active to reload. Attempting to reconnect."
         )
-        reconnectToBuildServer(cc)
+        reconnectToBuildServer(connectionRequest)
       case Some(session) if forceRefresh => reloadAndIndex(session)
       case Some(session) =>
         workspaceReload().oldReloadResult(checksum) match {
           case Some(status) =>
             scribe.info(s"Skipping reload with status '${status.name}'")
-            Future.successful(BuildChange.None)
+            CFuture.successful(BuildChange.None)
           case None =>
             if (userConfig().automaticImportBuild == AutoImportBuildKind.All) {
               reloadAndIndex(session)
             } else {
               for {
-                userResponse <- workspaceReload().requestReload(
-                  buildTool,
-                  checksum,
-                )
+                userResponse <- workspaceReload()
+                  .requestReload(
+                    buildTool,
+                    checksum,
+                  )
+                  .withInterrupt
                 installResult <- {
                   if (userResponse.isYes) {
                     reloadAndIndex(session)
                   } else {
                     tables.dismissedNotifications.ImportChanges
                       .dismiss(2, TimeUnit.MINUTES)
-                    Future.successful(BuildChange.None)
+                    CFuture.successful(BuildChange.None)
                   }
                 }
               } yield installResult
@@ -159,6 +167,7 @@ final case class Indexer(
     }
   }
 
+  // also needs to be interruptable
   def profiledIndexWorkspace(check: () => Unit): Future[Unit] = {
     val tracked = workDoneProgress.trackFuture(
       Messages.indexing,
