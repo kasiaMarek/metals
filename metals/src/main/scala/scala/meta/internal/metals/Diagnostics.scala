@@ -51,6 +51,7 @@ final class Diagnostics(
     buildTargets: BuildTargets,
     downstreamTargets: PreviouslyCompiledDownsteamTargets,
     config: MetalsServerConfig,
+    publishScalametaDiagnostics: Boolean = false,
 ) {
   private val diagnostics =
     TrieMap.empty[AbsolutePath, ju.Queue[DiagnosticWithOrigin]]
@@ -145,12 +146,15 @@ final class Diagnostics(
   }
 
   def onSyntaxError(path: AbsolutePath, diags: List[Diagnostic]): Unit = {
-    diags.headOption match {
-      case Some(diagnostic) if !workspace.exists(path.isInReadonlyDirectory) =>
-        syntaxError(path) = diagnostic
-        publishDiagnostics(path)
-      case _ =>
-        onClose(path)
+    if (publishScalametaDiagnostics) {
+      diags.headOption match {
+        case Some(diagnostic)
+            if !workspace.exists(path.isInReadonlyDirectory) =>
+          syntaxError(path) = diagnostic
+          publishDiagnostics(path)
+        case _ =>
+          onClose(path)
+      }
     }
   }
 
@@ -322,23 +326,25 @@ final class Diagnostics(
     } {
       all.add(freshDiagnostic)
     }
-    for {
-      d <- syntaxError.get(path)
-      // De-duplicate only the most common and basic syntax errors.
-      isSameMessage = all.asScala.exists(diag =>
-        diag.getRange() == d.getRange() && diag.getMessage() == d.getMessage()
-      )
-      isDuplicate =
-        d.getMessage.replace("`", "").startsWith("identifier expected but") &&
-          all.asScala.exists { other =>
-            other.getMessage
-              .replace("`", "")
-              .startsWith("identifier expected") &&
-            other.getRange().getStart() == d.getRange().getStart()
-          }
-      if !isDuplicate && !isSameMessage
-    } {
-      all.add(d)
+    if (publishScalametaDiagnostics) {
+      for {
+        d <- syntaxError.get(path)
+        // De-duplicate only the most common and basic syntax errors.
+        isSameMessage = all.asScala.exists(diag =>
+          diag.getRange() == d.getRange() && diag.getMessage() == d.getMessage()
+        )
+        isDuplicate =
+          d.getMessage.replace("`", "").startsWith("identifier expected but") &&
+            all.asScala.exists { other =>
+              other.getMessage
+                .replace("`", "")
+                .startsWith("identifier expected") &&
+              other.getRange().getStart() == d.getRange().getStart()
+            }
+        if !isDuplicate && !isSameMessage
+      } {
+        all.add(d)
+      }
     }
     languageClient.publishDiagnostics(new PublishDiagnosticsParams(uri, all))
   }
